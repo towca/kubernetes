@@ -1,0 +1,61 @@
+apiVersion: resource.k8s.io/v1alpha2
+kind: ResourceClass
+metadata:
+  name: example
+driverName: test-driver.cdi.k8s.io
+structuredParameters: true
+---
+apiVersion: resource.k8s.io/v1alpha2
+kind: ResourceClaimParameters
+metadata:
+  name: example-claim-parameters
+  namespace: default
+shareable: true
+driverRequests:
+- driverName: test-driver.cdi.k8s.io
+  requests:
+  - namedResources:
+      selector: "true"
+---
+apiVersion: resource.k8s.io/v1alpha2
+kind: ResourceClaimTemplate
+metadata:
+  name: test-claim
+  namespace: default
+spec:
+  metadata:
+    labels:
+      app: test-claim
+  spec:
+    resourceClassName: example
+    parametersRef:
+      apiGroup: resource.k8s.io
+      kind: ResourceClaimParameters
+      name: example-claim-parameters
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test
+  labels:
+    k8s-app: test
+spec:
+  replicas: 15
+  selector:
+    matchLabels:
+      k8s-app: test
+  template:
+    metadata:
+      labels:
+        k8s-app: test
+    spec:
+      containers:
+      - name: with-resource
+        image: registry.k8s.io/pause:3.6
+        resources:
+          claims:
+          - name: resource
+      resourceClaims:
+      - name: resource
+        source:
+          resourceClaimTemplateName: test-claim
