@@ -480,7 +480,7 @@ func (ex *ExamplePlugin) NodeListAndWatchResources(req *drapbv1alpha3.NodeListAn
 
 	// Keep the stream open until the test is done.
 	// TODO: test sending more updates later
-	<-ex.stopCh
+	// <-ex.stopCh
 	ex.logger.Info("Done sending NodeListAndWatchResourcesResponse, closing stream")
 
 	return nil
