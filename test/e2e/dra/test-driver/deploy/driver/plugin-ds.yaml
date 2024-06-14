@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dra-driver
+  namespace: default
+  labels:
+    k8s-app: dra-driver
+spec:
+  selector:
+    matchLabels:
+      name: dra-driver
+  template:
+    metadata:
+      labels:
+        name: dra-driver
+    spec:
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      - operator: Exists
+        effect: NoExecute
+      volumes:
+      - name: plugin
+        hostPath:
+          path: /var/lib/kubelet/plugins
+      - name: device-plugin
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+      - name: plugins-registry-probe-mode
+        hostPath:
+          path: /var/lib/kubelet/plugins_registry
+      - name: dev
+        hostPath:
+          path: /dev
+      - name: run
+        hostPath:
+          path: /var/run
+      containers:
+      - name: driver
+        image: gcr.io/gke-jtuznik-hosted-master/dra-test-driver:latest
+        imagePullPolicy: Always
+        command:
+        - /test-driver
+        - kubelet-plugin
+        - -v=100
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: plugin
+          mountPath: /var/lib/kubelet/plugins
+        - name: device-plugin
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: plugins-registry-probe-mode
+          mountPath: /var/lib/kubelet/plugins_registry
+        - name: dev
+          mountPath: /dev
+        - name: run
+          mountPath: /var/run
+        resources:
+          requests:
+            cpu: 11m
+            memory: 100Mi
