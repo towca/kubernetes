@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dra-driver-controller
+  labels:
+    k8s-app: dra-driver-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: dra-driver-controller
+  template:
+    metadata:
+      labels:
+        name: dra-driver-controller
+    spec:
+      containers:
+      - name: driver
+        image: gcr.io/gke-jtuznik-hosted-master/dra-test-driver:latest
+        command:
+        - /test-driver
+        - controller
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 100Mi
