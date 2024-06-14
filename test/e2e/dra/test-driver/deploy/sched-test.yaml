@@ -1,0 +1,78 @@
+apiVersion: resource.k8s.io/v1alpha2
+kind: DeviceClass
+metadata:
+  name: example
+spec:
+  selectors:
+  - cel:
+      expression: "true"
+  - cel:
+      expression: "true && true"
+  config:
+  - opaque:
+      driver: test-driver.cdi.k8s.io
+      parameters:
+        apiVersion: v1
+        kind: ConfigMap
+        data:
+          a: b
+---
+apiVersion: resource.k8s.io/v1alpha3
+kind: ResourceClaimTemplate
+metadata:
+  name: test-claim
+  namespace: default
+spec:
+  metadata:
+    labels:
+      app: test-claim
+  spec:
+    devices:
+      requests:
+      - name: req1
+        deviceClassName: example
+        countMode: Exact
+        count: 1
+        adminAccess: false
+        selectors:
+        - cel:
+            expression: "true"
+        - cel:
+            expression: "true && true"
+      constraints:
+      - requests: ["req1"]
+      config:
+      - opaque:
+          driver: test-driver.cdi.k8s.io
+          parameters:
+            apiVersion: v1
+            kind: ConfigMap
+            data:
+              a: b
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test
+  labels:
+    k8s-app: test
+spec:
+  replicas: 15
+  selector:
+    matchLabels:
+      k8s-app: test
+  template:
+    metadata:
+      labels:
+        k8s-app: test
+    spec:
+      containers:
+      - name: with-resource
+        image: registry.k8s.io/pause:3.6
+        resources:
+          claims:
+          - name: resource
+            request: req1
+      resourceClaims:
+      - name: resource
+        resourceClaimTemplateName: test-claim
