@@ -306,6 +306,7 @@ func (h *HTTPExtender) Filter(
 		for i := range result.Nodes.Items {
 			nodeResult[i] = framework.NewNodeInfo()
 			nodeResult[i].SetNode(&result.Nodes.Items[i])
+			// TODO(DRA): nodeResult[i].SetDynamicResources(???)
 		}
 	}
 

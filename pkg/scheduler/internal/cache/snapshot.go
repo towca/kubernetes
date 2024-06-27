@@ -98,6 +98,7 @@ func createNodeInfoMap(pods []*v1.Pod, nodes []*v1.Node) map[string]*framework.N
 		}
 		nodeInfo := nodeNameToInfo[node.Name]
 		nodeInfo.SetNode(node)
+		// TODO(DRA): nodeInfo.SetDynamicResources(???)
 		nodeInfo.ImageStates = getNodeImageStates(node, imageExistenceMap)
 	}
 	return nodeNameToInfo

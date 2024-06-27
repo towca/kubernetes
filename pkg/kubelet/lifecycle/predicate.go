@@ -91,6 +91,7 @@ func (w *predicateAdmitHandler) Admit(attrs *PodAdmitAttributes) PodAdmitResult 
 	pods := attrs.OtherPods
 	nodeInfo := schedulerframework.NewNodeInfo(pods...)
 	nodeInfo.SetNode(node)
+	// TODO(DRA): nodeInfo.SetDynamicResources(???)
 
 	// TODO: Remove this after the SidecarContainers feature gate graduates to GA.
 	if !utilfeature.DefaultFeatureGate.Enabled(features.SidecarContainers) {

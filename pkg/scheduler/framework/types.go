@@ -25,6 +25,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	resourceapi "k8s.io/api/resource/v1alpha2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -239,11 +240,25 @@ func (pqi *QueuedPodInfo) DeepCopy() *QueuedPodInfo {
 	}
 }
 
+// PodDynamicResourceRequests contains objects associated with a Pod that define some of the Pod's resource requests
+// outside the Pod object itself. Scheduler needs this information for scheduled pods to know how much of
+// the dynamic resources are reserved on the Pod's Node during subsequent scheduling attempts. Scheduler also needs this
+// information for pending pods to evaluate whether a given Node has enough resources to satisfy the requests. Components
+// using the framework for scheduling simulations (e.g. Node autoscalers) need to be able to simulate these objects along
+// Pods through the SharedLister.
+//
+// All fields are optional, empty slices mean that there aren't any associated objects.
+type PodDynamicResourceRequests struct {
+	ResourceClaims          []*resourceapi.ResourceClaim
+	ResourceClaimParameters []*resourceapi.ResourceClaimParameters
+}
+
 // PodInfo is a wrapper to a Pod with additional pre-computed information to
 // accelerate processing. This information is typically immutable (e.g., pre-processed
 // inter-pod affinity selectors).
 type PodInfo struct {
 	Pod                        *v1.Pod
+	DynamicResourceRequests    PodDynamicResourceRequests
 	RequiredAffinityTerms      []AffinityTerm
 	RequiredAntiAffinityTerms  []AffinityTerm
 	PreferredAffinityTerms     []WeightedAffinityTerm
@@ -548,10 +563,23 @@ func (iss *ImageStateSummary) Snapshot() *ImageStateSummary {
 	}
 }
 
+// NodeDynamicResources contains objects associated with a Node that define some of the Node's resources outside the
+// Node object itself. Scheduler needs to evaluate both the Node and the associated objects to decide if certain pods
+// can be scheduled. Components using the framework for scheduling simulations (e.g. Node autoscalers) need to be able
+// to simulate these objects along Nodes through the SharedLister.
+//
+// All fields are optional, empty slices mean that there aren't any associated objects.
+type NodeDynamicResources struct {
+	ResourceSlices []*resourceapi.ResourceSlice
+}
+
 // NodeInfo is node level aggregated information.
 type NodeInfo struct {
 	// Overall node information.
 	node *v1.Node
+
+	// Node's resources defined outside the Node object
+	dynamicResources NodeDynamicResources
 
 	// Pods running on the node.
 	Pods []*PodInfo
@@ -735,6 +763,14 @@ func (n *NodeInfo) Node() *v1.Node {
 		return nil
 	}
 	return n.node
+}
+
+// DynamicResources returns dynamic resource information about this node
+func (n *NodeInfo) DynamicResources() NodeDynamicResources {
+	if n == nil {
+		return NodeDynamicResources{}
+	}
+	return n.dynamicResources
 }
 
 // Snapshot returns a copy of this node, Except that ImageStates is copied without the Nodes field.
@@ -963,6 +999,12 @@ func (n *NodeInfo) updatePVCRefCounts(pod *v1.Pod, add bool) {
 func (n *NodeInfo) SetNode(node *v1.Node) {
 	n.node = node
 	n.Allocatable = NewResource(node.Status.Allocatable)
+	n.Generation = nextGeneration()
+}
+
+// SetDynamicResources sets the node dynamic resource information
+func (n *NodeInfo) SetDynamicResources(resources NodeDynamicResources) {
+	n.dynamicResources = resources
 	n.Generation = nextGeneration()
 }
 

@@ -614,6 +614,7 @@ func (cache *cacheImpl) AddNode(logger klog.Logger, node *v1.Node) *framework.No
 	cache.nodeTree.addNode(logger, node)
 	cache.addNodeImageStates(node, n.info)
 	n.info.SetNode(node)
+	// TODO(DRA): n.info.SetDynamicResources(???)
 	return n.info.Snapshot()
 }
 
@@ -633,6 +634,7 @@ func (cache *cacheImpl) UpdateNode(logger klog.Logger, oldNode, newNode *v1.Node
 	cache.nodeTree.updateNode(logger, oldNode, newNode)
 	cache.addNodeImageStates(newNode, n.info)
 	n.info.SetNode(newNode)
+	// TODO(DRA): n.info.SetDynamicResources(???)
 	return n.info.Snapshot()
 }
 
