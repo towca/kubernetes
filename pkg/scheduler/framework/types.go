@@ -25,6 +25,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	resourceapi "k8s.io/api/resource/v1alpha3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -260,6 +261,29 @@ func (pqi *QueuedPodInfo) DeepCopy() *QueuedPodInfo {
 	}
 }
 
+// PodDynamicResourceRequests contains objects associated with a Pod that define some of the Pod's resource requests
+// outside the Pod object itself. Scheduler needs this information for scheduled pods to know how much of
+// the dynamic resources are reserved on the Pod's Node during subsequent scheduling attempts. Scheduler also needs this
+// information for pending pods to evaluate whether a given Node has enough resources to satisfy the requests. Components
+// using the framework for scheduling simulations (e.g. Node autoscalers) need to be able to simulate these objects along
+// Pods through the SharedLister.
+//
+// All fields are optional, empty slices mean that there aren't any associated objects.
+type PodDynamicResourceRequests struct {
+	ResourceClaims []*resourceapi.ResourceClaim
+}
+
+// DeepCopy returns a PodDynamicResourceRequests with all the objects inside DeepCopied individually.
+func (pdr PodDynamicResourceRequests) DeepCopy() PodDynamicResourceRequests {
+	var copiedClaims []*resourceapi.ResourceClaim
+	for _, claim := range pdr.ResourceClaims {
+		copiedClaims = append(copiedClaims, claim.DeepCopy())
+	}
+	return PodDynamicResourceRequests{
+		ResourceClaims: copiedClaims,
+	}
+}
+
 // PodInfo is a wrapper to a Pod with additional pre-computed information to
 // accelerate processing. This information is typically immutable (e.g., pre-processed
 // inter-pod affinity selectors).
@@ -269,6 +293,7 @@ type PodInfo struct {
 	RequiredAntiAffinityTerms  []AffinityTerm
 	PreferredAffinityTerms     []WeightedAffinityTerm
 	PreferredAntiAffinityTerms []WeightedAffinityTerm
+	DynamicResourceRequests    PodDynamicResourceRequests
 }
 
 // DeepCopy returns a deep copy of the PodInfo object.
@@ -279,6 +304,7 @@ func (pi *PodInfo) DeepCopy() *PodInfo {
 		RequiredAntiAffinityTerms:  pi.RequiredAntiAffinityTerms,
 		PreferredAffinityTerms:     pi.PreferredAffinityTerms,
 		PreferredAntiAffinityTerms: pi.PreferredAntiAffinityTerms,
+		DynamicResourceRequests:    pi.DynamicResourceRequests.DeepCopy(),
 	}
 }
 
@@ -573,10 +599,32 @@ func (iss *ImageStateSummary) Snapshot() *ImageStateSummary {
 	}
 }
 
+// NodeDynamicResources contains objects associated with a Node that define some of the Node's resources outside the
+// Node object itself. Scheduler needs to evaluate both the Node and the associated objects to decide if certain pods
+// can be scheduled. Components using the framework for scheduling simulations (e.g. Node autoscalers) need to be able
+// to simulate these objects along Nodes through the SharedLister.
+//
+// All fields are optional, empty slices mean that there aren't any associated objects.
+type NodeDynamicResources struct {
+	ResourceSlices []*resourceapi.ResourceSlice
+}
+
+// DeepCopy returns a NodeDynamicResources with all the objects inside DeepCopied individually.
+func (ndr NodeDynamicResources) DeepCopy() NodeDynamicResources {
+	var copiedSlices []*resourceapi.ResourceSlice
+	for _, slice := range ndr.ResourceSlices {
+		copiedSlices = append(copiedSlices, slice.DeepCopy())
+	}
+	return NodeDynamicResources{ResourceSlices: copiedSlices}
+}
+
 // NodeInfo is node level aggregated information.
 type NodeInfo struct {
 	// Overall node information.
 	node *v1.Node
+
+	// Node's resources defined outside the Node object
+	dynamicResources NodeDynamicResources
 
 	// Pods running on the node.
 	Pods []*PodInfo
@@ -762,10 +810,19 @@ func (n *NodeInfo) Node() *v1.Node {
 	return n.node
 }
 
+// DynamicResources returns dynamic resource information about this node
+func (n *NodeInfo) DynamicResources() NodeDynamicResources {
+	if n == nil {
+		return NodeDynamicResources{}
+	}
+	return n.dynamicResources
+}
+
 // Snapshot returns a copy of this node, Except that ImageStates is copied without the Nodes field.
 func (n *NodeInfo) Snapshot() *NodeInfo {
 	clone := &NodeInfo{
 		node:             n.node,
+		dynamicResources: n.dynamicResources,
 		Requested:        n.Requested.Clone(),
 		NonZeroRequested: n.NonZeroRequested.Clone(),
 		Allocatable:      n.Allocatable.Clone(),
@@ -829,12 +886,17 @@ func (n *NodeInfo) AddPodInfo(podInfo *PodInfo) {
 	n.update(podInfo.Pod, 1)
 }
 
-// AddPod is a wrapper around AddPodInfo.
-func (n *NodeInfo) AddPod(pod *v1.Pod) {
+func (n *NodeInfo) AddPodWithDynamicRequests(pod *v1.Pod, dynamicRequests PodDynamicResourceRequests) {
 	// ignore this err since apiserver doesn't properly validate affinity terms
 	// and we can't fix the validation for backwards compatibility.
 	podInfo, _ := NewPodInfo(pod)
+	podInfo.DynamicResourceRequests = dynamicRequests
 	n.AddPodInfo(podInfo)
+}
+
+// AddPod is a wrapper around AddPodInfo.
+func (n *NodeInfo) AddPod(pod *v1.Pod) {
+	n.AddPodWithDynamicRequests(pod, PodDynamicResourceRequests{})
 }
 
 func podWithAffinity(p *v1.Pod) bool {
@@ -991,9 +1053,20 @@ func (n *NodeInfo) SetNode(node *v1.Node) {
 	n.Generation = nextGeneration()
 }
 
-// RemoveNode removes the node object, leaving all other tracking information.
+func (n *NodeInfo) SetDynamicResources(resources NodeDynamicResources) {
+	n.dynamicResources = resources
+	n.Generation = nextGeneration()
+}
+
+func (n *NodeInfo) SetNodeWithDynamicResources(node *v1.Node, resources NodeDynamicResources) {
+	n.dynamicResources = resources
+	n.SetNode(node)
+}
+
+// RemoveNode removes the node object and its associated dynamic resource objects, leaving all other tracking information.
 func (n *NodeInfo) RemoveNode() {
 	n.node = nil
+	n.dynamicResources = NodeDynamicResources{}
 	n.Generation = nextGeneration()
 }
 
