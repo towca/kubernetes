@@ -573,6 +573,15 @@ type NodeDynamicResources struct {
 	ResourceSlices []*resourceapi.ResourceSlice
 }
 
+// DeepCopy returns a NodeDynamicResources with all of the objects inside DeepCopied individually.
+func (ndr NodeDynamicResources) DeepCopy() NodeDynamicResources {
+	var copiedSlices []*resourceapi.ResourceSlice
+	for _, slice := range ndr.ResourceSlices {
+		copiedSlices = append(copiedSlices, slice.DeepCopy())
+	}
+	return NodeDynamicResources{ResourceSlices: copiedSlices}
+}
+
 // NodeInfo is node level aggregated information.
 type NodeInfo struct {
 	// Overall node information.
