@@ -407,6 +407,8 @@ func (sched *Scheduler) schedulePod(ctx context.Context, fwk framework.Framework
 	if err := sched.Cache.UpdateSnapshot(klog.FromContext(ctx), sched.nodeInfoSnapshot); err != nil {
 		return result, err
 	}
+	// TODO(DRA): Propagate DRA objects here, aggregate, and pass to the snapshot update.
+	sched.nodeInfoSnapshot.UpdateDynamicResources(nil, nil)
 	trace.Step("Snapshotting scheduler cache and node infos done")
 
 	if sched.nodeInfoSnapshot.NumNodes() == 0 {

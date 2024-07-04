@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	v1 "k8s.io/api/core/v1"
+	resourceapi "k8s.io/api/resource/v1alpha3"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
@@ -152,6 +153,61 @@ func createImageExistenceMap(nodes []*v1.Node) map[string]sets.Set[string] {
 		}
 	}
 	return imageExistenceMap
+}
+
+func claimRefToName(pod *v1.Pod, claimRef v1.PodResourceClaim) string {
+	if claimRef.ResourceClaimName != nil {
+		return *claimRef.ResourceClaimName
+	}
+	for _, claimStatus := range pod.Status.ResourceClaimStatuses {
+		if claimStatus.Name == claimRef.Name && claimStatus.ResourceClaimName != nil {
+			return *claimStatus.ResourceClaimName
+		}
+	}
+	return ""
+}
+
+type draObjectRef struct {
+	name      string
+	namespace string
+}
+
+func (s *Snapshot) UpdateDynamicResources(claims map[draObjectRef]*resourceapi.ResourceClaim, slices map[string][]*resourceapi.ResourceSlice) error {
+	// TODO(DRA): Unify the DRA snapshotting logic with CA, it's repeated.
+	nodeInfos, err := s.List()
+	if err != nil {
+		return err
+	}
+	for _, nodeInfo := range nodeInfos {
+		nodeInfo.SetDynamicResources(framework.NodeDynamicResources{ResourceSlices: slices[nodeInfo.Node().Name]})
+
+		for _, podInfo := range nodeInfo.Pods {
+			podInfo.DynamicResourceRequests = framework.PodDynamicResourceRequests{}
+
+			for _, claimRef := range podInfo.Pod.Spec.ResourceClaims {
+				claim, err := s.claimForPod(podInfo.Pod, claimRef, claims)
+				if err != nil {
+					continue
+				}
+				podInfo.DynamicResourceRequests.ResourceClaims = append(podInfo.DynamicResourceRequests.ResourceClaims, claim)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Snapshot) claimForPod(pod *v1.Pod, claimRef v1.PodResourceClaim, claims map[draObjectRef]*resourceapi.ResourceClaim) (*resourceapi.ResourceClaim, error) {
+	claimName := claimRefToName(pod, claimRef)
+	if claimName == "" {
+		return nil, fmt.Errorf("couldn't determine ResourceClaim name")
+	}
+
+	claim, found := claims[draObjectRef{name: claimName, namespace: pod.Namespace}]
+	if !found {
+		return nil, fmt.Errorf("couldn't find ResourceClaim %q", claimName)
+	}
+
+	return claim, nil
 }
 
 // NodeInfos returns a NodeInfoLister.
