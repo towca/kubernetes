@@ -16,6 +16,8 @@ limitations under the License.
 
 package framework
 
+import resourceapi "k8s.io/api/resource/v1alpha3"
+
 // NodeInfoLister interface represents anything that can list/get NodeInfo objects from node name.
 type NodeInfoLister interface {
 	// List returns the list of NodeInfos.
@@ -35,8 +37,17 @@ type StorageInfoLister interface {
 	IsPVCUsedByPods(key string) bool
 }
 
+type Claims interface {
+	Get(namespace, claimName string) (*resourceapi.ResourceClaim, error)
+	GetOriginal(namespace, claimName string) (*resourceapi.ResourceClaim, error)
+	List() ([]*resourceapi.ResourceClaim, error)
+	Assume(claim *resourceapi.ResourceClaim) error
+	Restore(namespace, claimName string)
+}
+
 // SharedLister groups scheduler-specific listers.
 type SharedLister interface {
 	NodeInfos() NodeInfoLister
+	Claims() Claims
 	StorageInfos() StorageInfoLister
 }

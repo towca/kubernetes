@@ -1104,7 +1104,7 @@ func (tc *testContext) verify(t *testing.T, expected result, initialObjects []me
 		t.Errorf("Stored objects are different (- expected, + actual):\n%s", diff)
 	}
 
-	var expectAssumedClaims []metav1.Object
+	var expectAssumedClaims []*resourceapi.ResourceClaim
 	if expected.assumedClaim != nil {
 		expectAssumedClaims = append(expectAssumedClaims, expected.assumedClaim)
 	}
@@ -1142,20 +1142,24 @@ func (tc *testContext) listAll(t *testing.T) (objects []metav1.Object) {
 	return
 }
 
-func (tc *testContext) listAssumedClaims() []metav1.Object {
-	if tc.p.claimAssumeCache == nil {
+func (tc *testContext) listAssumedClaims() []*resourceapi.ResourceClaim {
+	// TODO(DRA): Make this safe.
+	if tc.p.claims == nil {
 		return nil
 	}
-	var assumedClaims []metav1.Object
-	for _, obj := range tc.p.claimAssumeCache.List(nil) {
-		claim := obj.(*resourceapi.ResourceClaim)
-		obj, _ := tc.p.claimAssumeCache.Get(claim.Namespace + "/" + claim.Name)
-		apiObj, _ := tc.p.claimAssumeCache.GetAPIObj(claim.Namespace + "/" + claim.Name)
-		if obj != apiObj {
+	var assumedClaims []*resourceapi.ResourceClaim
+	allClaims, err := tc.p.claims.List()
+	if err != nil {
+		return nil
+	}
+	for _, claim := range allClaims {
+		claim, _ := tc.p.claims.Get(claim.Namespace, claim.Name)
+		origClaim, _ := tc.p.claims.GetOriginal(claim.Namespace, claim.Name)
+		if claim != origClaim {
 			assumedClaims = append(assumedClaims, claim)
 		}
 	}
-	sortObjects(assumedClaims)
+	sortClaims(assumedClaims)
 	return assumedClaims
 }
 
@@ -1195,6 +1199,15 @@ func (tc *testContext) updateAPIServer(t *testing.T, objects []metav1.Object, up
 		}
 	}
 	return modified
+}
+
+func sortClaims(objects []*resourceapi.ResourceClaim) {
+	sort.Slice(objects, func(i, j int) bool {
+		if objects[i].GetNamespace() < objects[j].GetNamespace() {
+			return true
+		}
+		return objects[i].GetName() < objects[j].GetName()
+	})
 }
 
 func sortObjects(objects []metav1.Object) {

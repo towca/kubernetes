@@ -47,7 +47,6 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
 	schedutil "k8s.io/kubernetes/pkg/scheduler/util"
-	"k8s.io/kubernetes/pkg/scheduler/util/assumecache"
 	"k8s.io/utils/ptr"
 )
 
@@ -301,8 +300,8 @@ type dynamicResources struct {
 	// When implementing cluster autoscaler support, this assume cache or
 	// something like it (see https://github.com/kubernetes/kubernetes/pull/112202)
 	// might have to be managed by the cluster autoscaler.
-	claimAssumeCache *assumecache.AssumeCache
-
+	//claimAssumeCache *assumecache.AssumeCache
+	claims framework.Claims
 	// inFlightAllocations is map from claim UUIDs to claim objects for those claims
 	// for which allocation was triggered during a scheduling cycle and the
 	// corresponding claim status update call in PreBind has not been done
@@ -346,11 +345,11 @@ func New(ctx context.Context, plArgs runtime.Object, fh framework.Handle, fts fe
 		enabled:                       true,
 		controlPlaneControllerEnabled: fts.EnableDRAControlPlaneController,
 
-		fh:               fh,
-		clientset:        fh.ClientSet(),
-		classLister:      fh.SharedInformerFactory().Resource().V1alpha3().DeviceClasses().Lister(),
-		sliceLister:      fh.SharedInformerFactory().Resource().V1alpha3().ResourceSlices().Lister(),
-		claimAssumeCache: fh.ResourceClaimCache(),
+		fh:          fh,
+		clientset:   fh.ClientSet(),
+		classLister: fh.SharedInformerFactory().Resource().V1alpha3().DeviceClasses().Lister(),
+		sliceLister: fh.SharedInformerFactory().Resource().V1alpha3().ResourceSlices().Lister(),
+		claims:      &ClaimsAssumeCache{cache: fh.ResourceClaimCache()},
 	}
 	if pl.controlPlaneControllerEnabled {
 		pl.podSchedulingContextLister = fh.SharedInformerFactory().Resource().V1alpha3().PodSchedulingContexts().Lister()
@@ -677,14 +676,9 @@ func (pl *dynamicResources) foreachPodResourceClaim(pod *v1.Pod, cb func(podReso
 		if claimName == nil {
 			continue
 		}
-		obj, err := pl.claimAssumeCache.Get(pod.Namespace + "/" + *claimName)
+		claim, err := pl.claims.Get(pod.Namespace, *claimName)
 		if err != nil {
 			return err
-		}
-
-		claim, ok := obj.(*resourceapi.ResourceClaim)
-		if !ok {
-			return fmt.Errorf("unexpected object type %T for assumed object %s/%s", obj, pod.Namespace, *claimName)
 		}
 
 		if claim.DeletionTimestamp != nil {
@@ -840,7 +834,7 @@ func (pl *dynamicResources) PreFilter(ctx context.Context, state *framework.Cycl
 		//
 		// Claims are treated as "allocated" if they are in the assume cache
 		// or currently their allocation is in-flight.
-		allocator, err := structured.NewAllocator(ctx, allocateClaims, &claimListerForAssumeCache{assumeCache: pl.claimAssumeCache, inFlightAllocations: &pl.inFlightAllocations}, pl.classLister, pl.sliceLister)
+		allocator, err := structured.NewAllocator(ctx, allocateClaims, &claimListerForAssumeCache{claims: pl.claims, inFlightAllocations: &pl.inFlightAllocations}, pl.classLister, pl.sliceLister)
 		if err != nil {
 			return nil, statusError(logger, err)
 		}
@@ -853,16 +847,18 @@ func (pl *dynamicResources) PreFilter(ctx context.Context, state *framework.Cycl
 }
 
 type claimListerForAssumeCache struct {
-	assumeCache         *assumecache.AssumeCache
+	claims              framework.Claims
 	inFlightAllocations *sync.Map
 }
 
 func (cl *claimListerForAssumeCache) ListAllAllocated() ([]*resourceapi.ResourceClaim, error) {
-	// Probably not worth adding an index for?
-	objs := cl.assumeCache.List(nil)
-	allocated := make([]*resourceapi.ResourceClaim, 0, len(objs))
-	for _, obj := range objs {
-		claim := obj.(*resourceapi.ResourceClaim)
+	claims, err := cl.claims.List()
+	if err != nil {
+		return nil, err
+	}
+	allocated := make([]*resourceapi.ResourceClaim, 0, len(claims))
+	for _, origClaim := range claims {
+		claim := origClaim
 		if obj, ok := cl.inFlightAllocations.Load(claim.UID); ok {
 			claim = obj.(*resourceapi.ResourceClaim)
 		}
@@ -1333,7 +1329,7 @@ func (pl *dynamicResources) Unreserve(ctx context.Context, cs *framework.CycleSt
 		// claim object in the assume cache to what it was before.
 		if state.informationsForClaim[index].structuredParameters {
 			if _, found := pl.inFlightAllocations.LoadAndDelete(state.claims[index].UID); found {
-				pl.claimAssumeCache.Restore(claim.Namespace + "/" + claim.Name)
+				pl.claims.Restore(claim.Namespace, claim.Name)
 			}
 		}
 
@@ -1415,7 +1411,7 @@ func (pl *dynamicResources) bindClaim(ctx context.Context, state *stateData, ind
 			if finalErr == nil {
 				// This can fail, but only for reasons that are okay (concurrent delete or update).
 				// Shouldn't happen in this case.
-				if err := pl.claimAssumeCache.Assume(claim); err != nil {
+				if err := pl.claims.Assume(claim); err != nil {
 					logger.V(5).Info("Claim not stored in assume cache", "err", finalErr)
 				}
 			}
