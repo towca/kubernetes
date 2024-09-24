@@ -813,7 +813,7 @@ func TestPlugin(t *testing.T) {
 					},
 				},
 				postfilter: result{
-					// Claims with delayed allocation get deallocated.
+					// ResourceClaimTracker with delayed allocation get deallocated.
 					changes: change{
 						claim: func(in *resourceapi.ResourceClaim) *resourceapi.ResourceClaim {
 							return st.FromResourceClaim(in).
@@ -837,7 +837,7 @@ func TestPlugin(t *testing.T) {
 					},
 				},
 				postfilter: result{
-					// Claims with delayed allocation and structured parameters get deallocated immediately.
+					// ResourceClaimTracker with delayed allocation and structured parameters get deallocated immediately.
 					changes: change{
 						claim: func(in *resourceapi.ResourceClaim) *resourceapi.ResourceClaim {
 							return st.FromResourceClaim(in).
@@ -1144,17 +1144,17 @@ func (tc *testContext) listAll(t *testing.T) (objects []metav1.Object) {
 
 func (tc *testContext) listAssumedClaims() []*resourceapi.ResourceClaim {
 	// TODO(DRA): Make this safe.
-	if tc.p.claims == nil {
+	if tc.p.draManager.ResourceClaims() == nil {
 		return nil
 	}
 	var assumedClaims []*resourceapi.ResourceClaim
-	allClaims, err := tc.p.claims.List()
+	allClaims, err := tc.p.draManager.ResourceClaims().List()
 	if err != nil {
 		return nil
 	}
 	for _, claim := range allClaims {
-		claim, _ := tc.p.claims.Get(claim.Namespace, claim.Name)
-		origClaim, _ := tc.p.claims.GetOriginal(claim.Namespace, claim.Name)
+		claim, _ := tc.p.draManager.ResourceClaims().Get(claim.Namespace, claim.Name)
+		origClaim, _ := tc.p.draManager.ResourceClaims().GetOriginal(claim.Namespace, claim.Name)
 		if claim != origClaim {
 			assumedClaims = append(assumedClaims, claim)
 		}
@@ -1255,10 +1255,11 @@ func setup(t *testing.T, nodes []*v1.Node, claims []*resourceapi.ResourceClaim, 
 
 	tc.informerFactory = informers.NewSharedInformerFactory(tc.client, 0)
 	tc.claimAssumeCache = assumecache.NewAssumeCache(tCtx.Logger(), tc.informerFactory.Resource().V1alpha3().ResourceClaims().Informer(), "resource claim", "", nil)
+	draManager := runtime.NewDraManager(tc.claimAssumeCache, tc.informerFactory)
 	opts := []runtime.Option{
 		runtime.WithClientSet(tc.client),
 		runtime.WithInformerFactory(tc.informerFactory),
-		runtime.WithResourceClaimCache(tc.claimAssumeCache),
+		runtime.WithSharedDraManager(draManager),
 	}
 	fh, err := runtime.NewFramework(tCtx, nil, nil, opts...)
 	if err != nil {

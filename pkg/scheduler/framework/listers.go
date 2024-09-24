@@ -16,7 +16,10 @@ limitations under the License.
 
 package framework
 
-import resourceapi "k8s.io/api/resource/v1alpha3"
+import (
+	resourceapi "k8s.io/api/resource/v1alpha3"
+	"k8s.io/apimachinery/pkg/types"
+)
 
 // NodeInfoLister interface represents anything that can list/get NodeInfo objects from node name.
 type NodeInfoLister interface {
@@ -37,17 +40,73 @@ type StorageInfoLister interface {
 	IsPVCUsedByPods(key string) bool
 }
 
-type Claims interface {
-	Get(namespace, claimName string) (*resourceapi.ResourceClaim, error)
-	GetOriginal(namespace, claimName string) (*resourceapi.ResourceClaim, error)
-	List() ([]*resourceapi.ResourceClaim, error)
-	Assume(claim *resourceapi.ResourceClaim) error
-	Restore(namespace, claimName string)
-}
-
 // SharedLister groups scheduler-specific listers.
 type SharedLister interface {
 	NodeInfos() NodeInfoLister
-	Claims() Claims
 	StorageInfos() StorageInfoLister
+}
+
+type ResourceSliceLister interface {
+	List() ([]*resourceapi.ResourceSlice, error)
+}
+
+type DeviceClassLister interface {
+	List() ([]*resourceapi.DeviceClass, error)
+	Get(className string) (*resourceapi.DeviceClass, error)
+}
+
+// ResourceClaimTracker is used by the DRA plugin to track changes to ResourceClaims in-memory.
+//
+// If the claims are meant to be allocated in the API during the binding phase (e.g. when used by scheduler), the tracker helps avoid
+// race conditions between scheduling and binding phases (as well as between binding phase and the informer cache).
+//
+// If the binding phase is not used (e.g. when used by Cluster Autoscaler which only runs the scheduling phase, and simulates binding in-memory),
+// the tracker allows the framework user to obtain the claim allocations produced by the DRA plugin, and persist them outside of the API (e.g. in-memory).
+type ResourceClaimTracker interface {
+	// List lists ResourceClaims. The claims can either be obtained from a real informer, or simulated in-memory.
+	//
+	// If a real informer is used, changes made via AssumeClaimAfterApiCall() should be applied to the obtained claims until
+	// they're reflected in the informer cache.
+	//
+	// If claims are meant to be allocated during the binding phase, changes made via SignalClaimPendingAllocation() should
+	// be applied to the obtained claims until RemoveClaimPendingAllocation() is called. If the binding phase is not run,
+	// this is not a requirement - the user can choose whether to persist the SignalClaimPendingAllocation() changes.
+	List() ([]*resourceapi.ResourceClaim, error)
+	// Get works like List(), but for a single claim.
+	Get(namespace, claimName string) (*resourceapi.ResourceClaim, error)
+	// ListAllAllocated works like List(), but only lists claims that are allocated.
+	ListAllAllocated() ([]*resourceapi.ResourceClaim, error)
+
+	GetOriginal(namespace, claimName string) (*resourceapi.ResourceClaim, error)
+
+	// SignalClaimPendingAllocation is called when a Node is picked for a Pod, and the claim allocation is computed at
+	// the end of the scheduling phase (in Reserve).
+	//
+	// If the allocation is meant to be persisted during the binding phase, pods referencing the claim should be blocked
+	// from scheduling (ClaimHasPendingAllocation() should answer true) until that happens (RemoveClaimPendingAllocation() is called).
+	// The changes should then also be immediately reflected in List/Get/ListAllAllocated calls.
+	//
+	// If the binding phase is not run, this method allows the framework user to obtain the allocation computed by the DRA
+	// plugin (and e.g. persist it in-memory) with no additional requirements.
+	SignalClaimPendingAllocation(claimUid types.UID, allocatedClaim *resourceapi.ResourceClaim)
+	// ClaimHasPendingAllocation answers whether a given claim has a pending allocation during the scheduling phase. Claims with a pending allocation
+	// block other pods referencing them from scheduling until the allocation is persisted.
+	ClaimHasPendingAllocation(claimUid types.UID) bool
+	// RemoveClaimPendingAllocation is called in the binding phase when the claim's pending allocation has already been persisted, or
+	// has been aborted and won't be persisted. ClaimHasPendingAllocation() should stop answering true after this.
+	RemoveClaimPendingAllocation(claimUid types.UID) (found bool)
+
+	// AssumeClaimAfterApiCall is called in the binding phase, after the API call which persists the claim allocation. The claim update should
+	// be immediately reflected in Get/List/ListAllAllocated calls. This is done to avoid a race condition between the API call, and the informer
+	// cache being updated to reflect it.
+	AssumeClaimAfterApiCall(claim *resourceapi.ResourceClaim) error
+	// AssumedClaimRestore is called in Unreserve in case of errors during Reserve or later phases. It should stop reflecting the changes made via
+	// AssumeClaimAfterApiCall and revert back to the informer object.
+	AssumedClaimRestore(namespace, claimName string)
+}
+
+type SharedDraManager interface {
+	ResourceClaims() ResourceClaimTracker
+	ResourceSlices() ResourceSliceLister
+	DeviceClasses() DeviceClassLister
 }

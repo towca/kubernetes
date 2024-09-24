@@ -907,7 +907,7 @@ func podWithAffinity(p *v1.Pod) bool {
 func podWithRequiredAntiAffinity(p *v1.Pod) bool {
 	affinity := p.Spec.Affinity
 	return affinity != nil && affinity.PodAntiAffinity != nil &&
-		len(affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution) != 0
+			len(affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution) != 0
 }
 
 func removeFromSlice(logger klog.Logger, s []*PodInfo, k string) ([]*PodInfo, bool) {

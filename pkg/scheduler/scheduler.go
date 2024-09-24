@@ -296,9 +296,11 @@ func New(ctx context.Context,
 	waitingPods := frameworkruntime.NewWaitingPodsMap()
 
 	var resourceClaimCache *assumecache.AssumeCache
+	var draManager framework.SharedDraManager
 	if utilfeature.DefaultFeatureGate.Enabled(features.DynamicResourceAllocation) {
 		resourceClaimInformer := informerFactory.Resource().V1alpha3().ResourceClaims().Informer()
 		resourceClaimCache = assumecache.NewAssumeCache(logger, resourceClaimInformer, "ResourceClaim", "", nil)
+		draManager = frameworkruntime.NewDraManager(resourceClaimCache, informerFactory)
 	}
 
 	profiles, err := profile.NewMap(ctx, options.profiles, registry, recorderFactory,
@@ -306,7 +308,7 @@ func New(ctx context.Context,
 		frameworkruntime.WithClientSet(client),
 		frameworkruntime.WithKubeConfig(options.kubeConfig),
 		frameworkruntime.WithInformerFactory(informerFactory),
-		frameworkruntime.WithResourceClaimCache(resourceClaimCache),
+		frameworkruntime.WithSharedDraManager(draManager),
 		frameworkruntime.WithSnapshotSharedLister(snapshot),
 		frameworkruntime.WithCaptureProfile(frameworkruntime.CaptureProfile(options.frameworkCapturer)),
 		frameworkruntime.WithParallelism(int(options.parallelism)),

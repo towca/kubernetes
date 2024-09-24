@@ -38,7 +38,6 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/framework/parallelize"
-	"k8s.io/kubernetes/pkg/scheduler/util/assumecache"
 )
 
 // NodeScoreList declares a list of nodes and their scores.
@@ -819,10 +818,8 @@ type Handle interface {
 
 	SharedInformerFactory() informers.SharedInformerFactory
 
-	// ResourceClaimCache returns an assume cache of ResourceClaim objects
-	// which gets populated by the shared informer factory and the dynamic resources
-	// plugin.
-	ResourceClaimCache() *assumecache.AssumeCache
+	// SharedDraManager
+	SharedDraManager() SharedDraManager
 
 	// RunFilterPluginsWithNominatedPods runs the set of configured filter plugins for nominated pod on the given node.
 	RunFilterPluginsWithNominatedPods(ctx context.Context, state *CycleState, pod *v1.Pod, info *NodeInfo) *Status

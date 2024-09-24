@@ -272,65 +272,12 @@ type dynamicResources struct {
 	enabled                       bool
 	controlPlaneControllerEnabled bool
 
-	fh                         framework.Handle
-	clientset                  kubernetes.Interface
-	classLister                resourcelisters.DeviceClassLister
-	podSchedulingContextLister resourcelisters.PodSchedulingContextLister // nil if and only if DRAControlPlaneController is disabled
-	sliceLister                resourcelisters.ResourceSliceLister
+	fh        framework.Handle
+	clientset kubernetes.Interface
 
-	// claimAssumeCache enables temporarily storing a newer claim object
-	// while the scheduler has allocated it and the corresponding object
-	// update from the apiserver has not been processed by the claim
-	// informer callbacks. Claims get added here in PreBind and removed by
-	// the informer callback (based on the "newer than" comparison in the
-	// assume cache).
-	//
-	// It uses cache.MetaNamespaceKeyFunc to generate object names, which
-	// therefore are "<namespace>/<name>".
-	//
-	// This is necessary to ensure that reconstructing the resource usage
-	// at the start of a pod scheduling cycle doesn't reuse the resources
-	// assigned to such a claim. Alternatively, claim allocation state
-	// could also get tracked across pod scheduling cycles, but that
-	// - adds complexity (need to carefully sync state with informer events
-	//   for claims and ResourceSlices)
-	// - would make integration with cluster autoscaler harder because it would need
-	//   to trigger informer callbacks.
-	//
-	// When implementing cluster autoscaler support, this assume cache or
-	// something like it (see https://github.com/kubernetes/kubernetes/pull/112202)
-	// might have to be managed by the cluster autoscaler.
-	//claimAssumeCache *assumecache.AssumeCache
-	claims framework.Claims
-	// inFlightAllocations is map from claim UUIDs to claim objects for those claims
-	// for which allocation was triggered during a scheduling cycle and the
-	// corresponding claim status update call in PreBind has not been done
-	// yet. If another pod needs the claim, the pod is treated as "not
-	// schedulable yet". The cluster event for the claim status update will
-	// make it schedulable.
-	//
-	// This mechanism avoids the following problem:
-	// - Pod A triggers allocation for claim X.
-	// - Pod B shares access to that claim and gets scheduled because
-	//   the claim is assumed to be allocated.
-	// - PreBind for pod B is called first, tries to update reservedFor and
-	//   fails because the claim is not really allocated yet.
-	//
-	// We could avoid the ordering problem by allowing either pod A or pod B
-	// to set the allocation. But that is more complicated and leads to another
-	// problem:
-	// - Pod A and B get scheduled as above.
-	// - PreBind for pod A gets called first, then fails with a temporary API error.
-	//   It removes the updated claim from the assume cache because of that.
-	// - PreBind for pod B gets called next and succeeds with adding the
-	//   allocation and its own reservedFor entry.
-	// - The assume cache is now not reflecting that the claim is allocated,
-	//   which could lead to reusing the same resource for some other claim.
-	//
-	// A sync.Map is used because in practice sharing of a claim between
-	// pods is expected to be rare compared to per-pod claim, so we end up
-	// hitting the "multiple goroutines read, write, and overwrite entries
-	// for disjoint sets of keys" case that sync.Map is optimized for.
+	podSchedulingContextLister resourcelisters.PodSchedulingContextLister // nil if and only if DRAControlPlaneController is disabled
+	draManager                 framework.SharedDraManager
+
 	inFlightAllocations sync.Map
 }
 
@@ -344,12 +291,9 @@ func New(ctx context.Context, plArgs runtime.Object, fh framework.Handle, fts fe
 	pl := &dynamicResources{
 		enabled:                       true,
 		controlPlaneControllerEnabled: fts.EnableDRAControlPlaneController,
-
-		fh:          fh,
-		clientset:   fh.ClientSet(),
-		classLister: fh.SharedInformerFactory().Resource().V1alpha3().DeviceClasses().Lister(),
-		sliceLister: fh.SharedInformerFactory().Resource().V1alpha3().ResourceSlices().Lister(),
-		claims:      &ClaimsAssumeCache{cache: fh.ResourceClaimCache()},
+		fh:                            fh,
+		clientset:                     fh.ClientSet(),
+		draManager:                    fh.SharedDraManager(),
 	}
 	if pl.controlPlaneControllerEnabled {
 		pl.podSchedulingContextLister = fh.SharedInformerFactory().Resource().V1alpha3().PodSchedulingContexts().Lister()
@@ -676,7 +620,7 @@ func (pl *dynamicResources) foreachPodResourceClaim(pod *v1.Pod, cb func(podReso
 		if claimName == nil {
 			continue
 		}
-		claim, err := pl.claims.Get(pod.Namespace, *claimName)
+		claim, err := pl.draManager.ResourceClaims().Get(pod.Namespace, *claimName)
 		if err != nil {
 			return err
 		}
@@ -775,7 +719,7 @@ func (pl *dynamicResources) PreFilter(ctx context.Context, state *framework.Cycl
 				// Allocation in flight? Better wait for that
 				// to finish, see inFlightAllocations
 				// documentation for details.
-				if _, found := pl.inFlightAllocations.Load(claim.UID); found {
+				if found := pl.draManager.ResourceClaims().ClaimHasPendingAllocation(claim.UID); found {
 					return nil, statusUnschedulable(logger, fmt.Sprintf("resource claim %s is in the process of being allocated", klog.KObj(claim)))
 				}
 			} else {
@@ -795,7 +739,7 @@ func (pl *dynamicResources) PreFilter(ctx context.Context, state *framework.Cycl
 					return nil, statusError(logger, fmt.Errorf("request %s: unsupported request type", request.Name))
 				}
 
-				class, err := pl.classLister.Get(request.DeviceClassName)
+				class, err := pl.draManager.DeviceClasses().Get(request.DeviceClassName)
 				if err != nil {
 					// If the class cannot be retrieved, allocation cannot proceed.
 					if apierrors.IsNotFound(err) {
@@ -832,9 +776,9 @@ func (pl *dynamicResources) PreFilter(ctx context.Context, state *framework.Cycl
 		// expensive, we may have to maintain and update state more
 		// persistently.
 		//
-		// Claims are treated as "allocated" if they are in the assume cache
+		// ResourceClaimTracker are treated as "allocated" if they are in the assume cache
 		// or currently their allocation is in-flight.
-		allocator, err := structured.NewAllocator(ctx, allocateClaims, &claimListerForAssumeCache{claims: pl.claims, inFlightAllocations: &pl.inFlightAllocations}, pl.classLister, pl.sliceLister)
+		allocator, err := structured.NewAllocator(ctx, allocateClaims, pl.draManager.ResourceClaims(), pl.draManager.DeviceClasses(), pl.draManager.ResourceSlices())
 		if err != nil {
 			return nil, statusError(logger, err)
 		}
@@ -844,29 +788,6 @@ func (pl *dynamicResources) PreFilter(ctx context.Context, state *framework.Cycl
 
 	s.claims = claims
 	return nil, nil
-}
-
-type claimListerForAssumeCache struct {
-	claims              framework.Claims
-	inFlightAllocations *sync.Map
-}
-
-func (cl *claimListerForAssumeCache) ListAllAllocated() ([]*resourceapi.ResourceClaim, error) {
-	claims, err := cl.claims.List()
-	if err != nil {
-		return nil, err
-	}
-	allocated := make([]*resourceapi.ResourceClaim, 0, len(claims))
-	for _, origClaim := range claims {
-		claim := origClaim
-		if obj, ok := cl.inFlightAllocations.Load(claim.UID); ok {
-			claim = obj.(*resourceapi.ResourceClaim)
-		}
-		if claim.Status.Allocation != nil {
-			allocated = append(allocated, claim)
-		}
-	}
-	return allocated, nil
 }
 
 // PreFilterExtensions returns prefilter extensions, pod add and remove.
@@ -1245,7 +1166,7 @@ func (pl *dynamicResources) Reserve(ctx context.Context, cs *framework.CycleStat
 				claim.Finalizers = append(claim.Finalizers, resourceapi.Finalizer)
 			}
 			claim.Status.Allocation = allocation
-			pl.inFlightAllocations.Store(claim.UID, claim)
+			pl.draManager.ResourceClaims().SignalClaimPendingAllocation(claim.UID, claim)
 			logger.V(5).Info("Reserved resource in allocation result", "claim", klog.KObj(claim), "allocation", klog.Format(allocation))
 		}
 	}
@@ -1328,8 +1249,8 @@ func (pl *dynamicResources) Unreserve(ctx context.Context, cs *framework.CycleSt
 		// If allocation was in-flight, then it's not anymore and we need to revert the
 		// claim object in the assume cache to what it was before.
 		if state.informationsForClaim[index].structuredParameters {
-			if _, found := pl.inFlightAllocations.LoadAndDelete(state.claims[index].UID); found {
-				pl.claims.Restore(claim.Namespace, claim.Name)
+			if found := pl.draManager.ResourceClaims().RemoveClaimPendingAllocation(state.claims[index].UID); found {
+				pl.draManager.ResourceClaims().AssumedClaimRestore(claim.Namespace, claim.Name)
 			}
 		}
 
@@ -1411,11 +1332,11 @@ func (pl *dynamicResources) bindClaim(ctx context.Context, state *stateData, ind
 			if finalErr == nil {
 				// This can fail, but only for reasons that are okay (concurrent delete or update).
 				// Shouldn't happen in this case.
-				if err := pl.claims.Assume(claim); err != nil {
+				if err := pl.draManager.ResourceClaims().AssumeClaimAfterApiCall(claim); err != nil {
 					logger.V(5).Info("Claim not stored in assume cache", "err", finalErr)
 				}
 			}
-			pl.inFlightAllocations.Delete(claim.UID)
+			pl.draManager.ResourceClaims().RemoveClaimPendingAllocation(claim.UID)
 		}
 	}()
 

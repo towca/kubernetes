@@ -27,9 +27,9 @@ import (
 	resourceapi "k8s.io/api/resource/v1alpha3"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/cel/environment"
-	resourcelisters "k8s.io/client-go/listers/resource/v1alpha3"
 	"k8s.io/dynamic-resource-allocation/cel"
 	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // ClaimLister returns a subset of the claims that a
@@ -48,8 +48,8 @@ type ClaimLister interface {
 type Allocator struct {
 	claimsToAllocate []*resourceapi.ResourceClaim
 	claimLister      ClaimLister
-	classLister      resourcelisters.DeviceClassLister
-	sliceLister      resourcelisters.ResourceSliceLister
+	classLister      framework.DeviceClassLister
+	sliceLister      framework.ResourceSliceLister
 }
 
 // NewAllocator returns an allocator for a certain set of claims or an error if
@@ -57,8 +57,8 @@ type Allocator struct {
 func NewAllocator(ctx context.Context,
 	claimsToAllocate []*resourceapi.ResourceClaim,
 	claimLister ClaimLister,
-	classLister resourcelisters.DeviceClassLister,
-	sliceLister resourcelisters.ResourceSliceLister,
+	classLister framework.DeviceClassLister,
+	sliceLister framework.ResourceSliceLister,
 ) (*Allocator, error) {
 	return &Allocator{
 		claimsToAllocate: claimsToAllocate,
